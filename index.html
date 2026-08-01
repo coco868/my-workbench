@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#F6B8CE">
+<title>我的工作台</title>
+<link rel="manifest" href="./manifest.json">
+<link rel="apple-touch-icon" href="./apple-touch-icon.png">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <h1>我的工作台</h1>
+    <p id="todayStr"></p>
+  </header>
+
+  <nav class="tabs">
+    <button data-tab="habit" class="active">生活习惯打卡</button>
+    <button data-tab="study">学习记录</button>
+    <button data-tab="body">体重体脂</button>
+    <button data-tab="data">数据备份</button>
+  </nav>
+
+  <main>
+    <section id="tab-habit">
+      <div class="card">
+        <h2>每日作息目标</h2>
+        <div class="row">
+          <label>目标起床<input type="time" id="defWake"></label>
+          <label>目标睡觉<input type="time" id="defSleep"></label>
+        </div>
+        <button id="saveDefaults" class="primary">保存目标</button>
+      </div>
+
+      <div class="card">
+        <h2>自定义打卡习惯</h2>
+        <div id="habitChips" class="chips"></div>
+        <div class="add-row">
+          <input id="newHabit" placeholder="如：喝水8杯 / 冥想10分钟">
+          <button id="addHabit">添加</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="cal-head">
+          <button id="prevMonth" class="nav">‹</button>
+          <span id="calTitle"></span>
+          <button id="nextMonth" class="nav">›</button>
+        </div>
+        <div class="cal-week">
+          <span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>
+        </div>
+        <div id="calGrid" class="cal-grid"></div>
+        <p class="hint">绿格 = 起床/睡觉双达标　·　圆点 = 自定义习惯已完成</p>
+      </div>
+    </section>
+
+    <section id="tab-body" class="hidden">
+      <div class="card">
+        <h2>体重体脂记录</h2>
+        <p class="hint" style="text-align:left;margin:0 0 12px;line-height:1.6;color:var(--text-soft);">每天记录一次体重与体脂，曲线直观反映变化趋势，配合生活习惯养成。</p>
+        <div class="bm-range">
+          <button data-range="7">近7天</button>
+          <button data-range="30" class="active">近30天</button>
+          <button data-range="90">近90天</button>
+          <button data-range="all">全部</button>
+        </div>
+        <div id="bmChart" class="bm-chart"></div>
+        <div class="bm-actions">
+          <button id="bmAdd" class="primary">添加记录</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>历史记录</h2>
+        <div id="bmList" class="bm-list"></div>
+      </div>
+    </section>
+
+    <section id="tab-study" class="hidden">
+      <div class="card">
+        <h2>学习计划</h2>
+        <div id="taskList"></div>
+        <div class="add-row three">
+          <input id="newTaskTitle" placeholder="任务，如：完成论文第二章">
+          <input type="date" id="newTaskStart" title="开始时间">
+          <input type="date" id="newTaskDue" title="截止时间">
+          <button id="addTask">添加</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>每日学习问题</h2>
+        <label class="block">日期<input type="date" id="qDate"></label>
+        <textarea id="qText" rows="4" placeholder="记录今天的疑问、难点或思考……"></textarea>
+        <button id="saveQ" class="primary">保存</button>
+      </div>
+
+      <div class="card">
+        <h2>每月复盘</h2>
+        <label class="block">月份<input type="month" id="revMonth"></label>
+        <div id="revSummary" class="summary"></div>
+        <textarea id="revText" rows="5" placeholder="撰写本月总结与下月调整计划……"></textarea>
+        <button id="saveRev" class="primary">保存复盘</button>
+      </div>
+    </section>
+
+    <section id="tab-data" class="hidden">
+      <div class="card">
+        <h2>数据备份与同步</h2>
+        <p class="hint" style="text-align:left;margin:0 0 12px;line-height:1.6;">开启「自动备份文件」后，每次保存数据都会自动同步写入该 JSON 文件；打开工作台时自动从该文件恢复数据（需 Chrome / Edge 桌面版）。</p>
+        <button id="bindBackup" class="primary">设置自动备份文件</button>
+        <p id="backupStatus" class="backup-status"></p>
+        <hr class="sep">
+        <div class="data-row">
+          <button id="exportBtn" class="primary">导出数据</button>
+          <button id="importBtn" class="outline">导入数据</button>
+        </div>
+        <input type="file" id="importFile" accept="application/json,.json" style="display:none;">
+        <p class="hint" style="text-align:left;margin-top:10px;">「导出 / 导入」为通用 JSON，可在不同设备或手机间迁移数据。</p>
+      </div>
+
+      <div class="card">
+        <h2>云端同步（Supabase）</h2>
+        <p class="hint" style="text-align:left;margin:0 0 12px;line-height:1.6;color:var(--text-soft);">填入 Supabase 项目信息即可开启多设备自动同步与实时更新。配置仅保存在本机浏览器，不会上传到任何第三方。</p>
+        <label class="block">Project URL
+          <input type="text" id="sbUrl" placeholder="https://xxxx.supabase.co" inputmode="url">
+        </label>
+        <label class="block">anon key
+          <input type="text" id="sbKey" placeholder="eyJhbGciOi...">
+        </label>
+        <div class="data-row">
+          <button id="sbConnect" class="primary">连接并同步</button>
+          <button id="sbDisconnect" class="outline">断开</button>
+        </div>
+        <p id="cloudStatus" class="backup-status"></p>
+        <p class="hint" style="text-align:left;margin-top:10px;">还没有 Supabase？去 <a href="https://supabase.com" target="_blank" rel="noopener">supabase.com</a> 免费建项目，并在 SQL Editor 运行本项目附带的建表脚本（见 supabase_schema.sql）即可。</p>
+      </div>
+
+      <div class="card">
+        <h2>多设备共享数据（电脑 ⇄ 手机）</h2>
+        <p class="hint" style="text-align:left;margin:0 0 12px;line-height:1.7;color:var(--text-soft);">本工作台是同一个网页（PWA），电脑和手机用<b>同一个网址</b>即可共享数据，无需单独开发手机版。</p>
+        <details style="margin:10px 0;">
+          <summary style="cursor:pointer;color:var(--pink-deep);font-weight:600;">① 怎么把工作台变成手机 App？</summary>
+          <ol style="line-height:1.8;padding-left:20px;margin:10px 0 0;">
+            <li>手机浏览器（安卓 Chrome / iPhone Safari）打开工作台网址</li>
+            <li><b>安卓</b>：点右上角 ⋮ →「添加到主屏幕」<br><b>iPhone</b>：点底部「分享」→「添加到主屏幕」</li>
+            <li>桌面出现「我的工作台」图标，点开即全屏 App，离线也能用</li>
+          </ol>
+        </details>
+        <details style="margin:10px 0;">
+          <summary style="cursor:pointer;color:var(--pink-deep);font-weight:600;">② 电脑和手机怎么共享同一份数据？</summary>
+          <ol style="line-height:1.8;padding-left:20px;margin:10px 0 0;">
+            <li>在 <b>电脑</b> 和 <b>手机</b> 上分别用同一个网址打开工作台</li>
+            <li>两端都进入本页「云端同步（Supabase）」，填入<b>同一组</b> Project URL + anon key</li>
+            <li>两端都点「连接并同步」（每台新设备首次需填一次，之后自动记住）</li>
+            <li>完成！任一端保存/打卡，另一端<b>实时自动刷新</b>（已开启 Realtime）</li>
+          </ol>
+        </details>
+        <details style="margin:10px 0;">
+          <summary style="cursor:pointer;color:var(--pink-deep);font-weight:600;">③ 注意事项</summary>
+          <ul style="line-height:1.8;padding-left:20px;margin:10px 0 0;">
+            <li>Supabase 建表脚本（supabase_schema.sql）只需运行一次</li>
+            <li>当前为「不登录」共享模式，数据对填了同一 key 的人可见，适合个人使用</li>
+            <li>若某端显示「未连接」，检查该端是否填过 URL+key 并点过连接</li>
+            <li>换手机需重新填写一次 Supabase 信息（配置存本机，不上云）</li>
+          </ul>
+        </details>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="dayModal" class="modal hidden">
+  <div class="modal-card">
+    <h3 id="dmTitle"></h3>
+    <div class="row">
+      <label>目标起床<input type="time" id="dmTWake"></label>
+      <label>目标睡觉<input type="time" id="dmTSleep"></label>
+    </div>
+    <div class="row">
+      <label>实际起床<input type="time" id="dmWake"></label>
+      <label>实际睡觉<input type="time" id="dmSleep"></label>
+    </div>
+    <div id="dmHabits" class="dm-habits"></div>
+    <div class="modal-actions">
+      <button id="dmDelete" class="danger">删除记录</button>
+      <button id="dmSave" class="primary">保存</button>
+    </div>
+  </div>
+</div>
+
+  <div id="bodyModal" class="modal hidden">
+    <div class="modal-card">
+      <h3>添加体重体脂记录</h3>
+      <label class="block">日期
+        <input type="date" id="bmDate">
+      </label>
+      <div class="row">
+        <label>体重 (kg)<input type="number" id="bmWeight" step="0.1" min="0" max="300" placeholder="如 58.5"></label>
+        <label>体脂率 (%)<input type="number" id="bmFat" step="0.1" min="0" max="100" placeholder="如 22.3"></label>
+      </div>
+      <p id="bmMsg" class="bm-msg"></p>
+      <div class="modal-actions">
+        <button id="bmCancel" class="danger">取消</button>
+        <button id="bmSave" class="primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="taskModal" class="modal hidden">
+    <div class="modal-card">
+      <h3>编辑学习计划</h3>
+      <label class="block">任务名称
+        <input type="text" id="tmTitle" placeholder="任务名称">
+      </label>
+      <div class="row">
+        <label>开始时间<input type="date" id="tmStart"></label>
+        <label>截止时间<input type="date" id="tmDue"></label>
+      </div>
+      <label class="block">完成进度 <span id="tmProgVal" style="color:var(--pink-dark);font-weight:600;">0%</span>
+        <input type="range" id="tmProg" min="0" max="100" value="0">
+      </label>
+      <div class="modal-actions">
+        <button id="tmDelete" class="danger">删除</button>
+        <button id="tmSave" class="primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
