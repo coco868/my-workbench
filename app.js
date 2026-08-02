@@ -298,13 +298,15 @@
       const rec = c.other ? null : state.dayRecords[dateStr];
       const cell=document.createElement('div');
       cell.className='cal-cell'+(c.other?' other':'');
-      let met=false;
+      let cls='';
       if(rec && rec.wake && rec.sleep){
         const tw = rec.targetWake||state.habitDefaults.wake;
         const ts = rec.targetSleep||state.habitDefaults.sleep;
-        met = rec.wake<=tw && sleepMet(rec.sleep, ts);
+        const wakeOk = toMin(rec.wake) <= toMin(tw);                 // 实际起床 ≤ 目标起床
+        const sleepOk = sleepMet(rec.sleep, ts);                     // 实际睡觉 ≥ 目标睡觉（跨午夜感知）
+        cls = (wakeOk && sleepOk) ? 'met' : 'unmet';                 // 双达标=绿；已记录但未达标=橙
       }
-      if(met) cell.classList.add('met');
+      if(cls) cell.classList.add(cls);
       let dots='';
       if(rec && rec.custom){
         state.customHabits.forEach(h=>{
