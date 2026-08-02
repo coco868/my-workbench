@@ -70,6 +70,8 @@ button.danger{background:#fff;color:#E0728A;border:1px solid #F3C6D2;padding:10p
 .cal-cell:not(.other):active{transform:scale(.96);}
 .cal-cell.met{background:var(--green);border-color:#86cfa0;}
 .cal-cell.met .cd{color:#2f6b45;}
+.cal-cell.unmet{background:#FDEFE6;border-color:#F2C9A8;}
+.cal-cell.unmet .cd{color:#B5773F;}
 .cd{font-size:14px;font-weight:600;}
 .dots{display:flex;gap:3px;flex-wrap:wrap;justify-content:center;max-width:100%;}
 .dot{width:6px;height:6px;border-radius:50%;display:inline-block;}
