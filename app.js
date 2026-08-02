@@ -8,13 +8,18 @@
   const todayStr = ()=>{ const n=new Date(); return ymd(n.getFullYear(),n.getMonth(),n.getDate()); };
 
   let state;
-  let activeTab='habit';
+  let activeTab='overview';
+  let sleepRange=30;
+  let qPage=0;                 // 每日问题时间轴：当前页（每页 30 天）
+  const Q_PAGE_SIZE=30;
+  let paperYear=new Date().getFullYear();
+  let paperMonthFilter='';
 
   // ---------- 体重体脂（独立 Supabase 表 body_metrics） ----------
   const BM_KEY='myWorkbench_body_v1';
   const BM_USER='shared';
-  let bodyMetrics = {};   // { 'YYYY-MM-DD': {weight:Number, bodyFat:Number} }
-  let bmRange = 30;       // 7/30/90/'all'
+  let bodyMetrics = {};
+  let bmRange = 30;
   let rtBodyChannel=null;
   function loadBodyLocal(){ try{ bodyMetrics = JSON.parse(localStorage.getItem(BM_KEY))||{}; }catch(e){ bodyMetrics={}; } }
   function saveBodyLocal(){ localStorage.setItem(BM_KEY, JSON.stringify(bodyMetrics)); }
@@ -34,7 +39,6 @@
       s.onerror=()=>rej(new Error('load fail: '+src));
       document.head.appendChild(s);
     });
-    // 优先加载本地打包的 SDK（手机/离线更稳定），失败再回退 CDN
     return tryLoad('./supabase.min.js').catch(()=> tryLoad('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2'));
   }
   async function initCloud(){
@@ -107,7 +111,7 @@
     return {
       habitDefaults:{ wake:'07:30', sleep:'23:00' },
       customHabits:[ {name:'喝水8杯',color:PALETTE[0]}, {name:'冥想10分钟',color:PALETTE[1]} ],
-      dayRecords:{}, tasks:[], questions:{}, reviews:{},
+      dayRecords:{}, tasks:[], questions:{}, reviews:{}, papers:[],
       viewYear: now.getFullYear(), viewMonth: now.getMonth()
     };
   }
@@ -115,6 +119,7 @@
     localStorage.setItem(KEY, JSON.stringify(state));
     scheduleBackup();
     if(cloudEnabled) scheduleCloud();
+    if(activeTab==='overview') renderOverview();
   }
   let cloudTimer=null;
   function scheduleCloud(){
@@ -156,7 +161,7 @@
               const { data } = await supabase.from('workbench_state').select('*').eq('id', ROW_ID).maybeSingle();
               if(data && data.data){
                 const rt = data.updated_at ? new Date(data.updated_at).getTime() : 0;
-                if(localSaveAt && rt <= new Date(localSaveAt).getTime()) return; // 忽略自身回环
+                if(localSaveAt && rt <= new Date(localSaveAt).getTime()) return;
                 state = Object.assign(defaultState(), data.data);
                 localStorage.setItem(KEY, JSON.stringify(state));
                 lastSyncAt = data.updated_at || new Date().toISOString();
@@ -219,13 +224,19 @@
     el.textContent='已连接云端 · 最后同步：'+t; el.className='backup-status sync-ok';
   }
 
-  // ---------- Tabs ----------
-  $$('.tabs button').forEach(b=>b.addEventListener('click',()=>{
-    $$('.tabs button').forEach(x=>x.classList.remove('active'));
+  // ---------- 侧边栏导航 ----------
+  $('#sideToggle').addEventListener('click',()=>{ $('#layout').classList.toggle('collapsed'); });
+  $('#menuBtn').addEventListener('click',()=>{ $('#layout').classList.remove('collapsed'); });
+  $$('.side-nav button').forEach(b=>b.addEventListener('click',()=>{
+    $$('.side-nav button').forEach(x=>x.classList.remove('active'));
     b.classList.add('active');
-    const t=b.dataset.tab;
-    activeTab=t;
-    ['habit','study','body','data'].forEach(s=>{ $('#tab-'+s).classList.toggle('hidden', s!==t); });
+    const t=b.dataset.tab; activeTab=t;
+    ['overview','habit','study','papers','body','data'].forEach(s=>{ $('#tab-'+s).classList.toggle('hidden', s!==t); });
+    if(t==='overview') renderOverview();
+    if(t==='papers') renderPapers();
+    if(t==='study') renderQuestionsTimeline();
+    if(t==='body'){ renderBodyChart(); renderBodyList(); }
+    if(window.innerWidth<=680) $('#layout').classList.add('collapsed'); // 移动端选中后收起
   }));
 
   // ---------- Header date ----------
@@ -235,20 +246,118 @@
     $('#todayStr').textContent = `${now.getFullYear()}年${now.getMonth()+1}月${now.getDate()}日 星期${w}`;
   })();
 
-  // ---------- Habit defaults ----------
+  // ---------- 时间工具 ----------
+  function toMin(hm){ const [h,m]=hm.split(':').map(Number); return h*60+m; }
+  function sleepMet(actual,target){
+    if(!actual||!target) return false;
+    const a=toMin(actual), t=toMin(target);
+    const aa = (a<720)? a+1440 : a;
+    return aa>=t;
+  }
+  function sleepDuration(sleep, wake){
+    const s=toMin(sleep), w=toMin(wake);
+    const dur = (w<=s)? (w+1440 - s) : (w - s);
+    return dur/60;
+  }
+  function daysBetween(a,b){
+    const da=new Date(a+'T00:00:00'), db=new Date(b+'T00:00:00');
+    return Math.round((db-da)/86400000);
+  }
+
+  // ================= 总览仪表盘 =================
+  function donut(pct, color, label, sub){
+    const r=46, c=2*Math.PI*r, off=c*(1-pct/100);
+    return `<div class="ring">
+      <svg viewBox="0 0 120 120">
+        <circle cx="60" cy="60" r="${r}" fill="none" stroke="#F0E3E8" stroke-width="12"/>
+        <circle cx="60" cy="60" r="${r}" fill="none" stroke="${color}" stroke-width="12" stroke-linecap="round"
+          stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" transform="rotate(-90 60 60)"/>
+        <text x="60" y="58" text-anchor="middle" font-size="22" font-weight="700" fill="#4A4A4A">${pct}%</text>
+        <text x="60" y="76" text-anchor="middle" font-size="11" fill="#9A9A9A">${sub}</text>
+      </svg>
+      <div class="ring-label">${label}</div>
+    </div>`;
+  }
+  function renderOverview(){
+    const t0=todayStr();
+    const rec=state.dayRecords[t0];
+    // 习惯完成率
+    const total=state.customHabits.length;
+    let checked=0;
+    if(rec&&rec.custom) state.customHabits.forEach(h=>{ if(rec.custom[h.name]) checked++; });
+    const habitPct = total? Math.round(checked/total*100):0;
+    const habitSub = total? `${checked}/${total}` : '无习惯';
+    // 睡眠达标
+    let met=false;
+    if(rec&&rec.wake&&rec.sleep){
+      const tw=rec.targetWake||state.habitDefaults.wake, ts=rec.targetSleep||state.habitDefaults.sleep;
+      met = toMin(rec.wake)<=toMin(tw) && sleepMet(rec.sleep, ts);
+    }
+    const sleepPct = met?100:0;
+    const sleepSub = (rec&&rec.wake&&rec.sleep)? (met?'达标':'未达标') : '未记录';
+    // 学习推进
+    const activeToday = state.tasks.filter(t=> t.start && t.due && t.start<=t0 && t0<=t.due);
+    const doneToday = activeToday.filter(t=> t.checkins && t.checkins[t0]).length;
+    const studyPct = activeToday.length? Math.round(doneToday/activeToday.length*100):0;
+    const studySub = activeToday.length? `${doneToday}/${activeToday.length}` : '今日无计划';
+    $('#ovRings').innerHTML =
+      donut(habitPct,'#F6A5C0','习惯完成率',habitSub) +
+      donut(sleepPct, met?'#9BD9B0':'#E8A0A0','睡眠达标',sleepSub) +
+      donut(studyPct,'#9CC9E8','学习推进',studySub);
+    renderSleepTrend();
+  }
+  function renderSleepTrend(){
+    const days=sleepRange;
+    const entries=[];
+    const cut=new Date(); cut.setDate(cut.getDate()-(days-1));
+    for(let i=0;i<days;i++){
+      const d=new Date(cut); d.setDate(cut.getDate()+i);
+      const ds=ymd(d.getFullYear(),d.getMonth(),d.getDate());
+      const rec=state.dayRecords[ds];
+      entries.push({ date:ds, dur:(rec&&rec.wake&&rec.sleep)? Math.round(sleepDuration(rec.sleep,rec.wake)*10)/10 : null });
+    }
+    // 目标睡眠时长
+    const ts=toMin(state.habitDefaults.sleep), tw=toMin(state.habitDefaults.wake);
+    let targetDur = (tw<=ts)? (tw+1440-ts) : (tw-ts); targetDur=Math.round(targetDur/60*10)/10;
+    if(!(targetDur>0)) targetDur=8;
+    const box=$('#sleepChart'); if(!box) return;
+    const has=entries.filter(e=>e.dur!=null);
+    if(has.length<2){ box.innerHTML='<p class="empty">需至少 2 天完整记录（同时含起床+睡觉）才能绘制睡眠趋势。</p>'; return; }
+    const W=680,H=300,mL=42,mR=16,mT=18,mB=34, pw=W-mL-mR, ph=H-mT-mB;
+    const durs=has.map(e=>e.dur);
+    let maxV=Math.max(targetDur, ...durs, 8); maxV=Math.ceil(maxV/2)*2; // 取偶数上限
+    const X=i=> mL + (i/(entries.length-1))*pw;
+    const Y=v=> mT + ph - (v/maxV)*ph;
+    let grid=''; for(let g=0; g<=maxV; g+=2){ const y=Y(g); grid+=`<line x1="${mL}" y1="${y.toFixed(1)}" x2="${mL+pw}" y2="${y.toFixed(1)}" stroke="#F0E3E8" stroke-width="1"/><text x="${mL-6}" y="${(y+4).toFixed(1)}" text-anchor="end" font-size="10" fill="#9A9A9A">${g}h</text>`; }
+    let xl=''; const step=Math.max(1,Math.ceil(entries.length/7)); entries.forEach((e,i)=>{ if(i%step===0||i===entries.length-1) xl+=`<text x="${X(i).toFixed(1)}" y="${H-12}" text-anchor="middle" font-size="9" fill="#9A9A9A">${e.date.slice(5)}</text>`; });
+    // 目标参考线
+    const ty=Y(targetDur);
+    const targetLine=`<line x1="${mL}" y1="${ty.toFixed(1)}" x2="${mL+pw}" y2="${ty.toFixed(1)}" stroke="#E58FAE" stroke-width="1.5" stroke-dasharray="5 4"/><text x="${mL+pw}" y="${(ty-5).toFixed(1)}" text-anchor="end" font-size="10" fill="#E58FAE">目标 ${targetDur}h</text>`;
+    // 折线（按索引映射，缺失点断开）
+    let pts=''; let seg=[]; entries.forEach((e,i)=>{ if(e.dur!=null){ seg.push(`${X(i).toFixed(1)},${Y(e.dur).toFixed(1)}`); } else { if(seg.length>1) pts+=`<polyline points="${seg.join(' ')}" fill="none" stroke="#C3A5E8" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`; seg=[]; } });
+    if(seg.length>1) pts+=`<polyline points="${seg.join(' ')}" fill="none" stroke="#C3A5E8" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
+    let dots=''; entries.forEach((e,i)=>{ if(e.dur!=null) dots+=`<circle cx="${X(i).toFixed(1)}" cy="${Y(e.dur).toFixed(1)}" r="3" fill="#C3A5E8"/>`; });
+    box.innerHTML=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${grid}${targetLine}${pts}${dots}${xl}
+      <text x="${mL}" y="12" font-size="10" fill="#C3A5E8">睡眠时长(h)</text></svg>`;
+  }
+  $$('#sleepRange button').forEach(b=>b.addEventListener('click',()=>{
+    $$('#sleepRange button').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active'); sleepRange=+b.dataset.range; renderSleepTrend();
+  }));
+
+  // ================= 生活习惯打卡 =================
   $('#saveDefaults').addEventListener('click',()=>{
     state.habitDefaults.wake = $('#defWake').value || '07:30';
     state.habitDefaults.sleep = $('#defSleep').value || '23:00';
-    save(); renderCalendar(); toast('已保存作息目标');
+    save(); renderCalendar(); if(activeTab==='overview') renderOverview();
+    toast('已保存作息目标');
   });
-
-  // ---------- Custom habits ----------
   $('#addHabit').addEventListener('click',()=>{
     const v=$('#newHabit').value.trim();
     if(!v) return;
     state.customHabits.push({name:v, color:PALETTE[state.customHabits.length%PALETTE.length]});
     $('#newHabit').value='';
-    save(); renderHabitChips(); renderCalendar();
+    save(); renderHabitChips(); renderCalendar(); if(activeTab==='overview') renderOverview();
   });
   function renderHabitChips(){
     const box=$('#habitChips'); box.innerHTML='';
@@ -263,24 +372,15 @@
     $$('.chip-del').forEach(b=>b.addEventListener('click',()=>{
       const i=+b.dataset.i;
       state.customHabits.splice(i,1);
-      save(); renderHabitChips(); renderCalendar();
+      save(); renderHabitChips(); renderCalendar(); if(activeTab==='overview') renderOverview();
     }));
   }
-
-  // ---------- Calendar ----------
-  $('#prevMonth').addEventListener('click',()=>{ shiftMonth(-1); });
-  $('#nextMonth').addEventListener('click',()=>{ shiftMonth(1); });
+  $('#prevMonth').addEventListener('click',()=>shiftMonth(-1));
+  $('#nextMonth').addEventListener('click',()=>shiftMonth(1));
   function shiftMonth(d){
     let m=state.viewMonth+d, y=state.viewYear;
     if(m<0){m=11;y--;} if(m>11){m=0;y++;}
     state.viewMonth=m; state.viewYear=y; renderCalendar();
-  }
-  function toMin(hm){ const [h,m]=hm.split(':').map(Number); return h*60+m; }
-  function sleepMet(actual,target){
-    if(!actual||!target) return false;
-    const a=toMin(actual), t=toMin(target);
-    const aa = (a<720)? a+1440 : a; // 把凌晨(0-12点)视为次日，便于跨午夜比较
-    return aa>=t;
   }
   function renderCalendar(){
     const y=state.viewYear, m=state.viewMonth;
@@ -302,9 +402,9 @@
       if(rec && rec.wake && rec.sleep){
         const tw = rec.targetWake||state.habitDefaults.wake;
         const ts = rec.targetSleep||state.habitDefaults.sleep;
-        const wakeOk = toMin(rec.wake) <= toMin(tw);                 // 实际起床 ≤ 目标起床
-        const sleepOk = sleepMet(rec.sleep, ts);                     // 实际睡觉 ≥ 目标睡觉（跨午夜感知）
-        cls = (wakeOk && sleepOk) ? 'met' : 'unmet';                 // 双达标=绿；已记录但未达标=橙
+        const wakeOk = toMin(rec.wake) <= toMin(tw);
+        const sleepOk = sleepMet(rec.sleep, ts);
+        cls = (wakeOk && sleepOk) ? 'met' : 'unmet';
       }
       if(cls) cell.classList.add(cls);
       let dots='';
@@ -318,8 +418,6 @@
       grid.appendChild(cell);
     });
   }
-
-  // ---------- Day modal ----------
   let curDate=null;
   function openDay(dateStr){
     curDate=dateStr;
@@ -348,25 +446,22 @@
     $$('#dmHabits input[type=checkbox]').forEach(cb=>{ custom[cb.dataset.h]=cb.checked; });
     state.dayRecords[curDate]={ targetWake:$('#dmTWake').value, targetSleep:$('#dmTSleep').value,
       wake:$('#dmWake').value, sleep:$('#dmSleep').value, custom };
-    save(); closeDay(); renderCalendar(); toast('已保存');
+    save(); closeDay(); renderCalendar(); if(activeTab==='overview') renderOverview();
+    toast('已保存');
   });
   $('#dmDelete').addEventListener('click',()=>{
-    if(curDate){ delete state.dayRecords[curDate]; save(); closeDay(); renderCalendar(); toast('已删除记录'); }
+    if(curDate){ delete state.dayRecords[curDate]; save(); closeDay(); renderCalendar(); if(activeTab==='overview') renderOverview(); toast('已删除记录'); }
   });
 
-  // ---------- Learning tasks ----------
+  // ================= 学习任务 =================
   $('#addTask').addEventListener('click',()=>{
     const title=$('#newTaskTitle').value.trim();
     if(!title) return;
     const start=$('#newTaskStart').value || todayStr();
     state.tasks.push({ id:Date.now()+'', title, start, due:$('#newTaskDue').value||'', progress:0, checkins:{} });
     $('#newTaskTitle').value=''; $('#newTaskStart').value=''; $('#newTaskDue').value='';
-    save(); renderTasks();
+    save(); renderTasks(); if(activeTab==='overview') renderOverview();
   });
-  function daysBetween(a,b){ // a,b 'YYYY-MM-DD' -> 整数天数 (b - a)
-    const da=new Date(a+'T00:00:00'), db=new Date(b+'T00:00:00');
-    return Math.round((db-da)/86400000);
-  }
   function renderTasks(){
     const list=$('#taskList'); list.innerHTML='';
     if(state.tasks.length===0){ list.innerHTML='<p class="empty">还没有学习任务，添加一项开始吧～</p>'; return; }
@@ -374,7 +469,6 @@
     state.tasks.forEach(t=>{
       const el=document.createElement('div'); el.className='task';
       const done = !!t.checkins[t0];
-      // 进度增强：时间进度 vs 完成进度
       let progHtml='';
       if(t.start && t.due){
         const total = Math.max(1, daysBetween(t.start, t.due));
@@ -402,7 +496,7 @@
       list.appendChild(el);
     });
     $$('.task .del').forEach(b=>b.addEventListener('click',()=>{
-      state.tasks=state.tasks.filter(t=>t.id!==b.dataset.id); save(); renderTasks();
+      state.tasks=state.tasks.filter(t=>t.id!==b.dataset.id); save(); renderTasks(); if(activeTab==='overview') renderOverview();
     }));
     $$('.task .edit').forEach(b=>b.addEventListener('click',()=>openTaskEdit(b.dataset.id)));
     $$('.task .prog').forEach(s=>s.addEventListener('input',()=>{
@@ -413,11 +507,9 @@
       const t=state.tasks.find(x=>x.id===b.dataset.id);
       if(!t) return;
       if(t.checkins[t0]) delete t.checkins[t0]; else t.checkins[t0]=true;
-      save(); renderTasks();
+      save(); renderTasks(); if(activeTab==='overview') renderOverview();
     }));
   }
-
-  // ---------- 学习计划编辑弹窗 ----------
   let editTaskId=null;
   function openTaskEdit(id){
     const t=state.tasks.find(x=>x.id===id); if(!t) return;
@@ -438,16 +530,162 @@
     t.start=$('#tmStart').value||'';
     t.due=$('#tmDue').value||'';
     t.progress=+$('#tmProg').value;
-    save(); closeTaskEdit(); renderTasks(); toast('已保存修改');
+    save(); closeTaskEdit(); renderTasks(); if(activeTab==='overview') renderOverview(); toast('已保存修改');
   });
   $('#tmDelete').addEventListener('click',()=>{
     if(confirm('确定删除该学习计划？此操作不可撤销。')){
       state.tasks=state.tasks.filter(t=>t.id!==editTaskId);
-      save(); closeTaskEdit(); renderTasks(); toast('已删除计划');
+      save(); closeTaskEdit(); renderTasks(); if(activeTab==='overview') renderOverview(); toast('已删除计划');
     }
   });
 
-  // ---------- 体重体脂 UI ----------
+  // ================= 每日学习问题：时间轴 =================
+  function renderQuestionsTimeline(){
+    const dates=Object.keys(state.questions).filter(d=>state.questions[d]&&state.questions[d].trim()).sort().reverse();
+    const total=dates.length;
+    $('#qCount').textContent = total? `共 ${total} 天记录` : '暂无记录';
+    const pages=Math.max(1, Math.ceil(total/Q_PAGE_SIZE));
+    if(qPage>=pages) qPage=pages-1;
+    if(qPage<0) qPage=0;
+    const slice=dates.slice(qPage*Q_PAGE_SIZE, qPage*Q_PAGE_SIZE+Q_PAGE_SIZE);
+    const box=$('#qTimeline'); box.innerHTML='';
+    if(total===0){ box.innerHTML='<p class="empty">还没有学习问题记录，去日历打卡页的日子或这里添加吧～</p>'; }
+    slice.forEach(d=>{
+      const block=document.createElement('div'); block.className='q-block';
+      block.innerHTML=`<div class="q-head"><span class="qd">${d}</span><span class="qt">▼</span></div>
+        <div class="q-body">
+          <textarea rows="3" data-d="${d}">${escapeHtml(state.questions[d])}</textarea>
+          <div class="data-row">
+            <button class="primary q-save" data-d="${d}">保存</button>
+            <button class="outline q-del" data-d="${d}">删除</button>
+          </div>
+        </div>`;
+      box.appendChild(block);
+    });
+    $$('.q-head').forEach(h=>h.addEventListener('click',()=>h.closest('.q-block').classList.toggle('open')));
+    $$('.q-save').forEach(b=>b.addEventListener('click',()=>{
+      const d=b.dataset.d; const v=b.closest('.q-body').querySelector('textarea').value.trim();
+      if(v) state.questions[d]=v; else delete state.questions[d];
+      save(); renderQuestionsTimeline(); toast('已保存');
+    }));
+    $$('.q-del').forEach(b=>b.addEventListener('click',()=>{
+      if(confirm('确定删除 '+b.dataset.d+' 的问题记录？')){ delete state.questions[b.dataset.d]; save(); renderQuestionsTimeline(); }
+    }));
+    $('#qPrev').disabled = qPage<=0;
+    $('#qNext').disabled = qPage>=pages-1;
+  }
+  $('#qPrev').addEventListener('click',()=>{ if(qPage>0){ qPage--; renderQuestionsTimeline(); } });
+  $('#qNext').addEventListener('click',()=>{ qPage++; renderQuestionsTimeline(); });
+
+  // ================= 每月复盘 =================
+  function loadRev(){
+    const m=$('#revMonth').value;
+    $('#revText').value = state.reviews[m]||'';
+    renderRevSummary(m);
+  }
+  $('#revMonth').addEventListener('change',loadRev);
+  function renderRevSummary(m){
+    const tasks=state.tasks;
+    const avg = tasks.length? Math.round(tasks.reduce((s,t)=>s+(t.progress||0),0)/tasks.length):0;
+    const studyDays=new Set();
+    tasks.forEach(t=>Object.keys(t.checkins||{}).forEach(d=>{ if(d.startsWith(m+'-')) studyDays.add(d); }));
+    const lifeDays=new Set();
+    Object.keys(state.dayRecords).forEach(d=>{ if(d.startsWith(m+'-')) lifeDays.add(d); });
+    const qs=Object.keys(state.questions).filter(d=>d.startsWith(m+'-')).sort().map(d=>({d,t:state.questions[d]}));
+    const startedThisMonth = tasks.filter(t=>t.start && t.start.startsWith(m+'-')).length;
+    let html=`<div class="stat"><span>任务平均进度</span><b>${avg}%</b></div>
+      <div class="stat"><span>学习打卡天数</span><b>${studyDays.size} 天</b></div>
+      <div class="stat"><span>作息记录天数</span><b>${lifeDays.size} 天</b></div>
+      <div class="stat"><span>本月开始计划</span><b>${startedThisMonth} 个</b></div>`;
+    if(qs.length){
+      html+='<div class="qlist"><h4>本月学习问题（'+qs.length+'）</h4>';
+      qs.forEach(q=> html+=`<div class="qitem"><span class="qd">${q.d}</span>${escapeHtml(q.t)}</div>`);
+      html+='</div>';
+    } else { html+='<p class="empty">本月暂无学习问题记录。</p>'; }
+    $('#revSummary').innerHTML=html;
+  }
+  $('#saveRev').addEventListener('click',()=>{
+    const m=$('#revMonth').value; if(!m) return;
+    const v=$('#revText').value.trim();
+    if(v) state.reviews[m]=v; else delete state.reviews[m];
+    save(); toast('已保存复盘');
+  });
+
+  // ================= 论文阅读 =================
+  function paperMonthOf(start, end){
+    const base = start || end;
+    if(!base) return '';
+    return base.slice(0,7);
+  }
+  $('#paperAdd').addEventListener('click',()=>{
+    const title=$('#paperTitle').value.trim();
+    const start=$('#paperStart').value, end=$('#paperEnd').value;
+    if(!title){ $('#paperMsg').textContent='请填写论文标题'; return; }
+    const month=paperMonthOf(start,end);
+    state.papers.push({ id:Date.now()+'', title, start, end, month, note:$('#paperNote').value.trim() });
+    $('#paperTitle').value=''; $('#paperStart').value=''; $('#paperEnd').value=''; $('#paperNote').value='';
+    $('#paperMsg').textContent='';
+    save(); renderPapers(); toast('已保存论文');
+  });
+  function renderPapers(){
+    // 年份选择
+    const sel=$('#paperYear');
+    const years=[...new Set(state.papers.map(p=>p.month.slice(0,4)).filter(Boolean))];
+    const curY=new Date().getFullYear();
+    if(!years.includes(String(curY))) years.push(String(curY));
+    years.sort();
+    if(!years.includes(String(paperYear))) paperYear=+years[years.length-1];
+    sel.innerHTML=years.map(y=>`<option value="${y}" ${+y===paperYear?'selected':''}>${y} 年</option>`).join('');
+    // 月份筛选
+    const months=[...new Set(state.papers.map(p=>p.month).filter(Boolean))].sort();
+    const mf=$('#paperMonthFilter');
+    mf.innerHTML='<option value="">全部月份</option>'+months.map(m=>`<option value="${m}" ${m===paperMonthFilter?'selected':''}>${m}</option>`).join('');
+    // 柱状统计
+    const counts=Array(12).fill(0);
+    state.papers.forEach(p=>{ if(p.month && p.month.startsWith(String(paperYear)+'-')){ const mo=+p.month.slice(5,7); if(mo>=1&&mo<=12) counts[mo-1]++; } });
+    const maxC=Math.max(1,...counts);
+    const W=680,H=200,mL=8,mR=8,mT=10,mB=22, pw=W-mL-mR, ph=H-mT-mB;
+    const bw=pw/12*0.6;
+    let bars=''; for(let i=0;i<12;i++){ const x=mL+(i+0.5)*(pw/12); const h=counts[i]/maxC*ph; const y=mT+ph-h;
+      bars+=`<rect x="${(x-bw/2).toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="3" fill="${counts[i]?'#F6A5C0':'#F0E3E8'}"/>
+        <text x="${x.toFixed(1)}" y="${(y-3).toFixed(1)}" text-anchor="middle" font-size="10" fill="#9A9A9A">${counts[i]||''}</text>
+        <text x="${x.toFixed(1)}" y="${(H-6)}" text-anchor="middle" font-size="9" fill="#9A9A9A">${i+1}月</text>`; }
+    $('#paperBar').innerHTML=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${bars}</svg>`;
+    // 列表：按月份分组
+    let list=state.papers.slice();
+    if(paperMonthFilter) list=list.filter(p=>p.month===paperMonthFilter);
+    list.sort((a,b)=> (b.start||b.end||'').localeCompare(a.start||a.end||'') || (b.end||'').localeCompare(a.end||''));
+    const byMonth={};
+    list.forEach(p=>{ const k=p.month||'未标注月份'; (byMonth[k]=byMonth[k]||[]).push(p); });
+    const keys=Object.keys(byMonth).sort().reverse();
+    const box=$('#paperList'); box.innerHTML='';
+    if(keys.length===0){ box.innerHTML='<p class="empty">暂无论文记录。</p>'; return; }
+    keys.forEach(k=>{
+      const grp=document.createElement('div'); grp.className='paper-month';
+      grp.innerHTML=`<h4>${k.replace('-',' 年 ')} 月 · ${byMonth[k].length} 篇</h4>`;
+      byMonth[k].forEach(p=>{
+        const row=document.createElement('div'); row.className='paper-item';
+        const dateTxt = (p.start&&p.end)? `${p.start} ~ ${p.end}` : (p.start||p.end||'');
+        row.innerHTML=`<div class="pt">${escapeHtml(p.title)}</div>
+          <div class="pm">${dateTxt}</div>
+          ${p.note?`<div class="pn">${escapeHtml(p.note)}</div>`:''}
+          <div class="pa"><button class="del" data-id="${p.id}">删除</button></div>`;
+        grp.appendChild(row);
+      });
+      box.appendChild(grp);
+    });
+    $$('#paperList .del').forEach(b=>b.addEventListener('click',()=>{
+      const id=b.dataset.id; const p=state.papers.find(x=>x.id===id);
+      if(confirm('确定删除论文《'+(p?p.title:'')+'》？')){
+        state.papers=state.papers.filter(x=>x.id!==id); save(); renderPapers();
+      }
+    }));
+  }
+  $('#paperYear').addEventListener('change',e=>{ paperYear=+e.target.value; renderPapers(); });
+  $('#paperMonthFilter').addEventListener('change',e=>{ paperMonthFilter=e.target.value; renderPapers(); });
+  $('#paperClearFilter').addEventListener('click',()=>{ paperMonthFilter=''; renderPapers(); });
+
+  // ================= 体重体脂 UI =================
   $$('.bm-range button').forEach(b=>b.addEventListener('click',()=>{
     $$('.bm-range button').forEach(x=>x.classList.remove('active'));
     b.classList.add('active');
@@ -532,51 +770,7 @@
     </svg>`;
   }
 
-  // ---------- Questions ----------
-  function loadQ(){ $('#qText').value = state.questions[$('#qDate').value]||''; }
-  $('#qDate').addEventListener('change',loadQ);
-  $('#saveQ').addEventListener('click',()=>{
-    const d=$('#qDate').value; if(!d) return;
-    const v=$('#qText').value.trim();
-    if(v) state.questions[d]=v; else delete state.questions[d];
-    save(); toast('已保存学习问题');
-  });
-
-  // ---------- Review ----------
-  function loadRev(){
-    const m=$('#revMonth').value;
-    $('#revText').value = state.reviews[m]||'';
-    renderRevSummary(m);
-  }
-  $('#revMonth').addEventListener('change',loadRev);
-  function renderRevSummary(m){
-    const tasks=state.tasks;
-    const avg = tasks.length? Math.round(tasks.reduce((s,t)=>s+(t.progress||0),0)/tasks.length):0;
-    const studyDays=new Set();
-    tasks.forEach(t=>Object.keys(t.checkins).forEach(d=>{ if(d.startsWith(m+'-')) studyDays.add(d); }));
-    const lifeDays=new Set();
-    Object.keys(state.dayRecords).forEach(d=>{ if(d.startsWith(m+'-')) lifeDays.add(d); });
-    const qs=Object.keys(state.questions).filter(d=>d.startsWith(m+'-')).sort().map(d=>({d,t:state.questions[d]}));
-    const startedThisMonth = tasks.filter(t=>t.start && t.start.startsWith(m+'-')).length;
-    let html=`<div class="stat"><span>任务平均进度</span><b>${avg}%</b></div>
-      <div class="stat"><span>学习打卡天数</span><b>${studyDays.size} 天</b></div>
-      <div class="stat"><span>作息记录天数</span><b>${lifeDays.size} 天</b></div>
-      <div class="stat"><span>本月开始计划</span><b>${startedThisMonth} 个</b></div>`;
-    if(qs.length){
-      html+='<div class="qlist"><h4>本月学习问题（'+qs.length+'）</h4>';
-      qs.forEach(q=> html+=`<div class="qitem"><span class="qd">${q.d}</span>${escapeHtml(q.t)}</div>`);
-      html+='</div>';
-    } else { html+='<p class="empty">本月暂无学习问题记录。</p>'; }
-    $('#revSummary').innerHTML=html;
-  }
-  $('#saveRev').addEventListener('click',()=>{
-    const m=$('#revMonth').value; if(!m) return;
-    const v=$('#revText').value.trim();
-    if(v) state.reviews[m]=v; else delete state.reviews[m];
-    save(); toast('已保存复盘');
-  });
-
-  // ---------- 云端同步 UI ----------
+  // ================= 云端同步 UI =================
   async function connectCloud(){
     const url=$('#sbUrl').value.trim();
     const key=$('#sbKey').value.trim();
@@ -607,7 +801,7 @@
   $('#sbConnect').addEventListener('click', connectCloud);
   $('#sbDisconnect').addEventListener('click', disconnectCloud);
 
-  // ---------- 数据备份 UI ----------
+  // ================= 数据备份 UI =================
   async function bindBackup(){
     if(!fsSupported){
       alert('当前浏览器不支持「自动备份到文件」（需 Chrome / Edge 桌面版）。\n你仍可使用「导出数据」手动备份，再在其它设备「导入数据」。');
@@ -668,7 +862,7 @@
     const f=e.target.files[0]; if(f) importData(f); e.target.value='';
   });
 
-  // ---------- utils ----------
+  // ================= utils =================
   function escapeHtml(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   let toastT;
   function toast(msg){
@@ -678,21 +872,20 @@
     clearTimeout(toastT); toastT=setTimeout(()=>el.classList.remove('show'),1800);
   }
 
-  // ---------- 统一渲染 ----------
+  // ================= 统一渲染 =================
   function bootRender(){
     $('#defWake').value = state.habitDefaults.wake;
     $('#defSleep').value = state.habitDefaults.sleep;
     renderHabitChips(); renderCalendar(); renderTasks(); renderBodyChart(); renderBodyList();
-    $('#qDate').value = todayStr(); loadQ();
     const n=new Date();
     $('#revMonth').value = `${n.getFullYear()}-${pad(n.getMonth()+1)}`; loadRev();
+    renderOverview(); renderPapers(); renderQuestionsTimeline();
   }
 
-  // ---------- 启动：先尝试从备份文件恢复 ----------
+  // ================= 启动 =================
   async function boot(){
     state = load();
     loadBodyLocal();
-    let restored=false;
     await initCloud();
     if(cloudEnabled){
       await loadFromCloud();
@@ -708,7 +901,6 @@
           if(data && typeof data==='object'){
             state=Object.assign(defaultState(), data.state||data);
             if(data.bodyMetrics){ bodyMetrics=data.bodyMetrics; saveBodyLocal(); }
-            restored=true;
           }
         }
       }catch(e){ console.warn('备份读取失败，使用本地数据', e); }
@@ -721,7 +913,6 @@
     if('serviceWorker' in navigator){
       window.addEventListener('load',()=>{ navigator.serviceWorker.register('./sw.js').catch(()=>{}); });
     }
-    if(restored) toast('已从备份文件恢复数据');
   }
 
   boot();
