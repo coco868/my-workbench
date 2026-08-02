@@ -1,4 +1,4 @@
-const CACHE = 'workbench-v7';
+const CACHE = 'workbench-v8';
 const ASSETS = [
   './', './index.html', './style.css', './app.js', './supabase.min.js',
   './manifest.json', './icon-192.png', './icon-512.png', './apple-touch-icon.png'
